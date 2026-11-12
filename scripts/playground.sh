@@ -209,6 +209,10 @@ platform() {
     sleep 15
   done
   kubectl -n flux-system wait helmrelease/cert-manager helmrelease/envoy-gateway --for=condition=Ready --timeout=10m
+  kubectl apply -f infrastructure/cert-manager/issuer.yaml
+  kubectl apply -f infrastructure/envoy-gateway/gatewayclass.yaml
+  kubectl wait clusterissuer/playground-root --for=condition=Ready --timeout=3m
+  kubectl -n cert-manager wait certificate/playground-ca --for=condition=Ready --timeout=3m
   kubectl wait clusterissuer/playground --for=condition=Ready --timeout=3m
 }
 

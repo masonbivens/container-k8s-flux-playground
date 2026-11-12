@@ -69,7 +69,7 @@ stop_forwards() {
       rm -f "$pidfile"
     fi
   done
-  pkill -f "port-forward svc/git-server 8080:8080" >/dev/null 2>&1 || true
+  pkill -f "port-forward svc/git-server 18080:18080" >/dev/null 2>&1 || true
   pkill -f "port-forward svc/.* 8443:443" >/dev/null 2>&1 || true
 }
 
@@ -102,7 +102,7 @@ json.dump(cm, sys.stdout)
 push_head() {
   local pass url
   pass=$(cat .local/git-password)
-  url="http://learner:${pass}@git.localhost:8080/learner/playground.git"
+  url="http://learner:${pass}@git.localhost:18080/learner/playground.git"
   if git remote get-url playground >/dev/null 2>&1; then
     git remote set-url playground "$url"
   else
@@ -148,7 +148,7 @@ git_server() {
   kubectl apply -k bootstrap/git-server
   kubectl -n git-server rollout status deployment/git-server --timeout=300s
   patch_dns
-  start_forward git git-server git-server 8080 8080
+  start_forward git git-server git-server 18080 18080
   local pass code
   pass=$(cat .local/git-password)
   if ! kubectl -n git-server exec deploy/git-server -- gitea admin user list | grep -q learner; then
@@ -160,7 +160,7 @@ git_server() {
     -u "learner:${pass}" \
     -H 'Content-Type: application/json' \
     -d '{"name":"playground","private":false,"auto_init":false,"default_branch":"main"}' \
-    http://git.localhost:8080/api/v1/user/repos || true)
+    http://git.localhost:18080/api/v1/user/repos || true)
   if [[ "$code" != "201" && "$code" != "409" ]]; then
     echo "git repo create failed: HTTP ${code}" >&2
     cat .local/git-repo-response >&2
@@ -171,12 +171,12 @@ git_server() {
 
 flux_bootstrap() {
   context
-  start_forward git git-server git-server 8080 8080
+  start_forward git git-server git-server 18080 18080
   push_head
   local pass
   pass=$(cat .local/git-password)
   GIT_PASSWORD="$pass" flux bootstrap git \
-    --url=http://git.localhost:8080/learner/playground.git \
+    --url=http://git.localhost:18080/learner/playground.git \
     --username=learner \
     --token-auth \
     --allow-insecure-http \
@@ -184,7 +184,7 @@ flux_bootstrap() {
     --branch=main \
     --path=clusters/playground
   GIT_PASSWORD="$pass" flux bootstrap git \
-    --url=http://git.localhost:8080/learner/playground.git \
+    --url=http://git.localhost:18080/learner/playground.git \
     --username=learner \
     --token-auth \
     --allow-insecure-http \

@@ -55,7 +55,7 @@ spec:
             - name: GITEA__server__DOMAIN
               value: git.localhost
             - name: GITEA__server__ROOT_URL
-              value: http://git.localhost:8080/
+              value: http://git.localhost:18080/
             - name: GITEA__server__DISABLE_SSH
               value: "true"
             - name: GITEA__server__START_SSH_SERVER
@@ -130,5 +130,5 @@ spec:
     app.kubernetes.io/name: git-server
   ports:
     - name: http
-      port: 8080
+      port: 18080
       targetPort: http

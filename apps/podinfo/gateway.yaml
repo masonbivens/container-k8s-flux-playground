@@ -1,0 +1,31 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: playground
+  labels:
+    app.kubernetes.io/name: envoy
+spec:
+  gatewayClassName: eg
+  infrastructure:
+    labels:
+      app.kubernetes.io/name: envoy
+  listeners:
+    - name: http
+      hostname: podinfo.localhost
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      hostname: podinfo.localhost
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: podinfo-tls
+      allowedRoutes:
+        namespaces:
+          from: Same

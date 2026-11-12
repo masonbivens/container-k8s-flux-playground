@@ -11,7 +11,7 @@ spec:
     branch: main
   secretRef:
     name: flux-system
-  url: http://git.localhost:8080/learner/playground.git
+  url: http://git.localhost:18080/learner/playground.git
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

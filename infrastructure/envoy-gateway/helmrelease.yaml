@@ -9,7 +9,6 @@ spec:
   targetNamespace: envoy-gateway-system
   releaseName: envoy-gateway
   install:
-    createNamespace: true
     remediation:
       retries: 3
   upgrade:

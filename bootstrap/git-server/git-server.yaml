@@ -60,8 +60,6 @@ spec:
               value: http://git.localhost:18080/
             - name: GITEA__server__DISABLE_SSH
               value: "true"
-            - name: GITEA__server__START_SSH_SERVER
-              value: "false"
             - name: GITEA__server__LFS_START_SERVER
               value: "false"
             - name: GITEA__service__DISABLE_REGISTRATION

@@ -6,6 +6,31 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
+git_host=git.localhost:18080
+
+section_name=Playground
+section_color=37
+
+section() {
+  section_name=$1
+  case "$1" in
+    Cluster) section_color=36 ;;
+    Git) section_color=33 ;;
+    Flux) section_color=34 ;;
+    Platform) section_color=35 ;;
+    Apps) section_color=32 ;;
+    Gateway) section_color=96 ;;
+  esac
+}
+
+say() {
+  if [[ -t 1 ]]; then
+    printf '\033[1;%sm==> %-8s\033[0m %s\n' "$section_color" "$section_name" "$*"
+  else
+    printf '==> %-8s %s\n' "$section_name" "$*"
+  fi
+}
+
 context() {
   kubectl config use-context playground >/dev/null
 }
@@ -24,6 +49,7 @@ install_shim() {
     echo "container k8s is not available" >&2
     return 1
   fi
+  say "Adding the container k8s command"
   mkdir -p "$dest/bin"
   cp "$plugin_root/cluster/config.toml" "$dest/config.toml"
   cat >"$dest/bin/k8s" <<EOF
@@ -44,6 +70,10 @@ start_forward() {
     fi
     kill "$(cat "$pidfile")" 2>/dev/null || true
   fi
+  case "$local_port" in
+    18080) say "Publishing the Git server at http://${git_host}" ;;
+    8443) say "Publishing the Gateway at https://podinfo.localhost:8443" ;;
+  esac
   nohup bash -c 'while true; do kubectl -n "$1" port-forward "svc/$2" "$3:$4" --address 127.0.0.1 --address ::1; sleep 1; done' \
     bash "$ns" "$svc" "$local_port" "$remote_port" \
     >".local/${name}-port-forward.log" 2>&1 </dev/null &
@@ -75,6 +105,8 @@ stop_forwards() {
 }
 
 patch_dns() {
+  local before
+  before=$(kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}')
   kubectl -n kube-system get cm coredns -o json | python3 -c '
 import json, sys
 cm = json.load(sys.stdin)
@@ -96,15 +128,22 @@ for key in ("resourceVersion", "uid", "creationTimestamp", "managedFields"):
     meta.pop(key, None)
 json.dump(cm, sys.stdout)
 ' | kubectl apply -f -
+  local after
+  after=$(kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}')
+  if [[ "$before" == "$after" ]]; then
+    return 0
+  fi
+  say "Pointing git.localhost at the Git server inside the Cluster"
   kubectl -n kube-system rollout restart deployment/coredns >/dev/null
   kubectl -n kube-system rollout status deployment/coredns --timeout=120s
 }
 
 push_head() {
   local pass url
+  say "Pushing main to the Git server"
   start_forward git git-server git-server 18080 18080
   pass=$(cat .local/git-password)
-  url="http://learner:${pass}@git.localhost:18080/learner/playground.git"
+  url="http://learner:${pass}@${git_host}/learner/playground.git"
   if git remote get-url playground >/dev/null 2>&1; then
     git remote set-url playground "$url"
   else
@@ -118,18 +157,27 @@ push_head() {
 }
 
 cluster() {
+  section Cluster
+  say "Starting the container system"
   container system start
   install_shim
   if ! container k8s list | awk 'NR>1 && $1=="playground" { found=1 } END { exit !found }'; then
+    say "Creating Cluster playground with 4 CPUs and 8 GB"
     container k8s create --name playground --cpus 4 --memory 8G
+  else
+    say "Cluster playground is already running"
   fi
   context
+  say "Waiting for the node"
   kubectl wait --for=condition=Ready node/playground --timeout=180s
+  say "Installing local-path storage"
   kubectl apply -k bootstrap/local-path
   kubectl -n local-path-storage rollout status deployment/local-path-provisioner --timeout=180s
 }
 
 git_server() {
+  section Git
+  say "Installing the Git server"
   context
   umask 077
   mkdir -p .local
@@ -148,21 +196,24 @@ git_server() {
     --from-file=internal-token=.local/gitea-internal-token \
     --dry-run=client -o yaml | kubectl apply -f -
   kubectl apply -k bootstrap/git-server
+  say "Waiting for the Git server"
   kubectl -n git-server rollout status deployment/git-server --timeout=300s
   patch_dns
   start_forward git git-server git-server 18080 18080
   local pass code
   pass=$(cat .local/git-password)
   if ! kubectl -n git-server exec deploy/git-server -- gitea admin user list | grep -q learner; then
+    say "Creating the learner account on the Git server"
     kubectl -n git-server exec deploy/git-server -- \
       gitea admin user create --admin --username learner --password "$pass" \
       --email learner@localhost --must-change-password=false
   fi
+  say "Ensuring the playground repository exists"
   code=$(curl -s -o .local/git-repo-response -w '%{http_code}' \
     -u "learner:${pass}" \
     -H 'Content-Type: application/json' \
     -d '{"name":"playground","private":false,"auto_init":false,"default_branch":"main"}' \
-    http://git.localhost:18080/api/v1/user/repos || true)
+    "http://${git_host}/api/v1/user/repos" || true)
   if [[ "$code" != "201" && "$code" != "409" ]]; then
     echo "git repo create failed: HTTP ${code}" >&2
     cat .local/git-repo-response >&2
@@ -171,46 +222,50 @@ git_server() {
   push_head
 }
 
+bootstrap_flux() {
+  local pass=$1 attempt
+  for attempt in 1 2 3; do
+    if GIT_PASSWORD="$pass" flux bootstrap git \
+      --url="http://${git_host}/learner/playground.git" \
+      --username=learner \
+      --token-auth \
+      --allow-insecure-http \
+      --silent \
+      --branch=main \
+      --path=clusters/playground; then
+      return 0
+    fi
+    if [[ "$attempt" == "3" ]]; then
+      return 1
+    fi
+    say "Flux is still reconciling. Retry ${attempt} of 3."
+    sleep 15
+  done
+}
+
 flux_bootstrap() {
+  section Flux
+  say "Pointing Flux at the Git server"
   context
-  start_forward git git-server git-server 18080 18080
   push_head
   local pass
   pass=$(cat .local/git-password)
-  GIT_PASSWORD="$pass" flux bootstrap git \
-    --url=http://git.localhost:18080/learner/playground.git \
-    --username=learner \
-    --token-auth \
-    --allow-insecure-http \
-    --silent \
-    --branch=main \
-    --path=clusters/playground
-  GIT_PASSWORD="$pass" flux bootstrap git \
-    --url=http://git.localhost:18080/learner/playground.git \
-    --username=learner \
-    --token-auth \
-    --allow-insecure-http \
-    --silent \
-    --branch=main \
-    --path=clusters/playground
+  bootstrap_flux "$pass"
+  say "Pointing Flux at the Git server again to confirm nothing changes"
+  bootstrap_flux "$pass"
+  say "Updating the local checkout from the Git server"
   git fetch playground main
   git merge --ff-only FETCH_HEAD
 }
 
 platform() {
+  section Platform
+  say "Installing cert-manager and Envoy Gateway"
   context
   push_head
-  local i
-  for i in 1 2 3 4 5 6; do
-    if flux reconcile kustomization infrastructure --with-source --timeout=10m; then
-      break
-    fi
-    if [[ "$i" == "6" ]]; then
-      return 1
-    fi
-    sleep 15
-  done
-  kubectl -n flux-system wait helmrelease/cert-manager helmrelease/envoy-gateway --for=condition=Ready --timeout=10m
+  flux reconcile kustomization infrastructure --with-source --timeout=12m
+  kubectl -n flux-system wait helmrelease/cert-manager helmrelease/envoy-gateway --for=condition=Ready --timeout=2m
+  say "Applying the CA and the GatewayClass"
   kubectl apply -f infrastructure/cert-manager/issuer.yaml
   kubectl apply -f infrastructure/envoy-gateway/gatewayclass.yaml
   kubectl wait clusterissuer/playground-root --for=condition=Ready --timeout=3m
@@ -219,6 +274,8 @@ platform() {
 }
 
 apps() {
+  section Apps
+  say "Installing podinfo, the Cache, and the Database"
   context
   umask 077
   mkdir -p .local
@@ -231,16 +288,22 @@ apps() {
     --dry-run=client -o yaml | kubectl apply -f -
   push_head
   flux reconcile kustomization apps --with-source --timeout=10m
+  say "Waiting for podinfo, the Cache, and the Database"
   kubectl -n apps rollout status deployment/podinfo --timeout=180s
   kubectl -n apps rollout status deployment/valkey --timeout=180s
   kubectl -n apps rollout status deployment/postgres --timeout=180s
 }
 
+gateway_service() {
+  kubectl get svc -A -l gateway.envoyproxy.io/owning-gateway-name=playground \
+    -o jsonpath='{.items[0].metadata.namespace}{" "}{.items[0].metadata.name}' 2>/dev/null || true
+}
+
 publish() {
   context
   start_forward git git-server git-server 18080 18080
-  local ns svc found
-  found=$(kubectl get svc -A -l gateway.envoyproxy.io/owning-gateway-name=playground -o jsonpath='{.items[0].metadata.namespace}{" "}{.items[0].metadata.name}' 2>/dev/null || true)
+  local found ns svc
+  found=$(gateway_service)
   if [[ -n "$found" ]]; then
     ns=${found%% *}
     svc=${found##* }
@@ -249,12 +312,16 @@ publish() {
 }
 
 gateway() {
+  section Gateway
+  say "Opening https://podinfo.localhost:8443"
   context
   umask 077
   mkdir -p .local
+  say "Saving the CA to .local/ca.crt"
   kubectl -n cert-manager get secret playground-ca -o jsonpath='{.data.ca\.crt}' | base64 -d >.local/ca.crt
   chmod 600 .local/ca.crt
   if ! security find-certificate -c playground "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
+    say "Trusting the CA in the login keychain. macOS may ask for the password once."
     security add-trusted-cert -r trustRoot \
       -k "$HOME/Library/Keychains/login.keychain-db" \
       .local/ca.crt >/dev/null 2>&1 &
@@ -274,7 +341,7 @@ gateway() {
   ns=""
   svc=""
   for i in $(seq 1 60); do
-    found=$(kubectl get svc -A -l gateway.envoyproxy.io/owning-gateway-name=playground -o jsonpath='{.items[0].metadata.namespace}{" "}{.items[0].metadata.name}' 2>/dev/null || true)
+    found=$(gateway_service)
     if [[ -n "$found" ]]; then
       ns=${found%% *}
       svc=${found##* }
@@ -284,7 +351,9 @@ gateway() {
   done
   [[ -n "$svc" ]]
   start_forward gateway "$ns" "$svc" 8443 443
+  say "Waiting for the podinfo certificate"
   kubectl -n apps wait --for=condition=Ready certificate/podinfo --timeout=180s
+  say "Checking https://podinfo.localhost:8443"
   for i in $(seq 1 30); do
     if curl --fail --silent --show-error --cacert .local/ca.crt https://podinfo.localhost:8443 >/dev/null; then
       curl --fail --cacert .local/ca.crt https://podinfo.localhost:8443
@@ -306,7 +375,7 @@ case "${1:-}" in
   publish) publish ;;
   stop-forwards) stop_forwards ;;
   *)
-    echo "usage: $0 cluster|git-server|flux|platform|apps|gateway|stop-forwards" >&2
+    echo "usage: $0 cluster|git-server|flux|platform|apps|gateway|publish|stop-forwards" >&2
     exit 1
     ;;
 esac

@@ -42,6 +42,7 @@ down:
 	container k8s delete --name playground
 
 status:
+	bash scripts/playground.sh publish
 	kubectl config use-context playground
 	container k8s list | awk 'NR>1 && $$1=="playground" { found=1 } END { exit !found }'
 	flux get kustomizations

@@ -44,9 +44,9 @@ start_forward() {
     fi
     kill "$(cat "$pidfile")" 2>/dev/null || true
   fi
-  nohup kubectl -n "$ns" port-forward "svc/$svc" "${local_port}:${remote_port}" \
-    --address 127.0.0.1 --address ::1 \
-    >".local/${name}-port-forward.log" 2>&1 &
+  nohup bash -c 'while true; do kubectl -n "$1" port-forward "svc/$2" "$3:$4" --address 127.0.0.1 --address ::1; sleep 1; done' \
+    bash "$ns" "$svc" "$local_port" "$remote_port" \
+    >".local/${name}-port-forward.log" 2>&1 </dev/null &
   echo $! >"$pidfile"
   local i
   for i in $(seq 1 30); do
@@ -65,6 +65,7 @@ stop_forwards() {
   for pidfile in .local/git-port-forward.pid .local/gateway-port-forward.pid; do
     if [[ -f "$pidfile" ]]; then
       pid=$(cat "$pidfile")
+      pkill -P "$pid" 2>/dev/null || true
       kill "$pid" 2>/dev/null || true
       rm -f "$pidfile"
     fi
@@ -101,6 +102,7 @@ json.dump(cm, sys.stdout)
 
 push_head() {
   local pass url
+  start_forward git git-server git-server 18080 18080
   pass=$(cat .local/git-password)
   url="http://learner:${pass}@git.localhost:18080/learner/playground.git"
   if git remote get-url playground >/dev/null 2>&1; then
@@ -234,6 +236,18 @@ apps() {
   kubectl -n apps rollout status deployment/postgres --timeout=180s
 }
 
+publish() {
+  context
+  start_forward git git-server git-server 18080 18080
+  local ns svc found
+  found=$(kubectl get svc -A -l gateway.envoyproxy.io/owning-gateway-name=playground -o jsonpath='{.items[0].metadata.namespace}{" "}{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -n "$found" ]]; then
+    ns=${found%% *}
+    svc=${found##* }
+    start_forward gateway "$ns" "$svc" 8443 443
+  fi
+}
+
 gateway() {
   context
   umask 077
@@ -278,6 +292,7 @@ case "${1:-}" in
   platform) platform ;;
   apps) apps ;;
   gateway) gateway ;;
+  publish) publish ;;
   stop-forwards) stop_forwards ;;
   *)
     echo "usage: $0 cluster|git-server|flux|platform|apps|gateway|stop-forwards" >&2

@@ -59,7 +59,7 @@ sync:
 logs:
 	kubectl config use-context playground
 	flux logs --since=10m
-	kubectl logs -l app.kubernetes.io/name=envoy --all-containers --tail=50 -A
+	kubectl logs -l app.kubernetes.io/name=envoy --all-containers --tail=50 -n envoy-gateway-system
 	kubectl logs -l app.kubernetes.io/name=podinfo --tail=50 -n apps
 	kubectl logs -l app.kubernetes.io/name=postgres --tail=50 -n apps
 	kubectl logs -l app.kubernetes.io/name=valkey --tail=50 -n apps

@@ -257,7 +257,18 @@ gateway() {
   if ! security find-certificate -c playground "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
     security add-trusted-cert -r trustRoot \
       -k "$HOME/Library/Keychains/login.keychain-db" \
-      .local/ca.crt || true
+      .local/ca.crt >/dev/null 2>&1 &
+    local trust_pid=$!
+    for i in $(seq 1 20); do
+      if ! kill -0 "$trust_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    if kill -0 "$trust_pid" 2>/dev/null; then
+      kill "$trust_pid" 2>/dev/null || true
+    fi
+    wait "$trust_pid" || true
   fi
   local ns svc i found
   ns=""

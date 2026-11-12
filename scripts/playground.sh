@@ -245,17 +245,20 @@ gateway() {
       -k "$HOME/Library/Keychains/login.keychain-db" \
       .local/ca.crt || true
   fi
-  local svc i
+  local ns svc i found
+  ns=""
   svc=""
   for i in $(seq 1 60); do
-    svc=$(kubectl -n apps get svc -l gateway.envoyproxy.io/owning-gateway-name=playground -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-    if [[ -n "$svc" ]]; then
+    found=$(kubectl get svc -A -l gateway.envoyproxy.io/owning-gateway-name=playground -o jsonpath='{.items[0].metadata.namespace}{" "}{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$found" ]]; then
+      ns=${found%% *}
+      svc=${found##* }
       break
     fi
     sleep 2
   done
   [[ -n "$svc" ]]
-  start_forward gateway apps "$svc" 8443 443
+  start_forward gateway "$ns" "$svc" 8443 443
   kubectl -n apps wait --for=condition=Ready certificate/podinfo --timeout=180s
   for i in $(seq 1 30); do
     if curl --fail --silent --show-error --cacert .local/ca.crt https://podinfo.localhost:8443 >/dev/null; then

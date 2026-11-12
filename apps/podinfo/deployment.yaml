@@ -25,6 +25,8 @@ spec:
         - name: podinfo
           image: ghcr.io/stefanprodan/podinfo:6.17.0
           imagePullPolicy: IfNotPresent
+          command:
+            - /home/app/podinfo
           args:
             - --port=9898
             - --cache-server=tcp://valkey.apps.svc.cluster.local:6379

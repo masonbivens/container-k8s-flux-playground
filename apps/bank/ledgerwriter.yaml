@@ -57,6 +57,8 @@ spec:
               value: "-XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap -Xms128m -Xmx384m"
             - name: ENABLE_METRICS
               value: "false"
+            - name: SPRING_AUTOCONFIGURE_EXCLUDE
+              value: org.springframework.boot.actuate.autoconfigure.metrics.SystemMetricsAutoConfiguration
             - name: POSTGRES_DB
               value: postgresdb
             - name: POSTGRES_USER

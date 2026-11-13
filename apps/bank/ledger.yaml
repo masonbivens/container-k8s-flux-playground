@@ -1,0 +1,25 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: ledger-admin
+spec:
+  cluster:
+    name: bank
+  name: admin
+  ensure: present
+  login: true
+  comment: ledger writer and readers
+  passwordSecret:
+    name: ledger-auth
+  databaseRoleReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: ledger
+spec:
+  cluster:
+    name: bank
+  name: postgresdb
+  owner: admin
+  databaseReclaimPolicy: retain

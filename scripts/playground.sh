@@ -19,6 +19,7 @@ section() {
     Flux) section_color=34 ;;
     Platform) section_color=35 ;;
     Apps) section_color=32 ;;
+    Bank) section_color=92 ;;
     Gateway) section_color=96 ;;
   esac
 }
@@ -33,6 +34,26 @@ say() {
 
 context() {
   kubectl config use-context playground >/dev/null
+}
+
+write_basic_auth() {
+  local ns=$1 name=$2 user=$3 pass=$4 dir current
+  current=$(kubectl -n "$ns" get secret "$name" -o jsonpath='{.type}' 2>/dev/null || true)
+  if [[ -n "$current" && "$current" != "kubernetes.io/basic-auth" ]]; then
+    kubectl -n "$ns" delete secret "$name"
+  fi
+  dir=$(mktemp -d)
+  printf '%s' "$user" >"$dir/username"
+  printf '%s' "$pass" >"$dir/password"
+  if ! kubectl -n "$ns" create secret generic "$name" \
+    --type=kubernetes.io/basic-auth \
+    --from-file=username="$dir/username" \
+    --from-file=password="$dir/password" \
+    --dry-run=client -o yaml | kubectl apply -f -; then
+    rm -rf "$dir"
+    return 1
+  fi
+  rm -rf "$dir"
 }
 
 install_shim() {
@@ -260,11 +281,11 @@ flux_bootstrap() {
 
 platform() {
   section Platform
-  say "Installing cert-manager and Envoy Gateway"
+  say "Installing cert-manager, Envoy Gateway, and CloudNativePG"
   context
   push_head
   flux reconcile kustomization infrastructure --with-source --timeout=12m
-  kubectl -n flux-system wait helmrelease/cert-manager helmrelease/envoy-gateway --for=condition=Ready --timeout=2m
+  kubectl -n flux-system wait helmrelease/cert-manager helmrelease/envoy-gateway helmrelease/cloudnative-pg --for=condition=Ready --timeout=2m
   say "Applying the CA and the GatewayClass"
   kubectl apply -f infrastructure/cert-manager/issuer.yaml
   kubectl apply -f infrastructure/envoy-gateway/gatewayclass.yaml
@@ -283,15 +304,63 @@ apps() {
     openssl rand -base64 24 | tr -d '\n' >.local/postgres-password
   fi
   kubectl create namespace apps --dry-run=client -o yaml | kubectl apply -f -
-  kubectl -n apps create secret generic postgres-auth \
-    --from-file=password=.local/postgres-password \
-    --dry-run=client -o yaml | kubectl apply -f -
+  write_basic_auth apps postgres-auth playground "$(tr -d '\n' <.local/postgres-password)"
   push_head
   flux reconcile kustomization apps --with-source --timeout=10m
   say "Waiting for podinfo, the Cache, and the Database"
   kubectl -n apps rollout status deployment/podinfo --timeout=180s
   kubectl -n apps rollout status deployment/valkey --timeout=180s
-  kubectl -n apps rollout status deployment/postgres --timeout=180s
+  kubectl -n apps wait cluster/postgres --for=condition=Ready --timeout=180s
+}
+
+bank() {
+  section Bank
+  say "Installing the bank databases and services"
+  context
+  umask 077
+  mkdir -p .local
+  local accounts ledger dir
+  if [[ ! -s .local/accounts-password ]]; then
+    openssl rand -hex 24 | tr -d '\n' >.local/accounts-password
+  fi
+  if [[ ! -s .local/ledger-password ]]; then
+    openssl rand -hex 24 | tr -d '\n' >.local/ledger-password
+  fi
+  if [[ ! -s .local/jwt.key || ! -s .local/jwt.pub ]]; then
+    openssl genrsa -out .local/jwt.key 2048
+    openssl rsa -in .local/jwt.key -pubout -out .local/jwt.pub
+  fi
+  chmod 600 .local/accounts-password .local/ledger-password .local/jwt.key .local/jwt.pub
+  accounts=$(tr -d '\n' <.local/accounts-password)
+  ledger=$(tr -d '\n' <.local/ledger-password)
+  kubectl create namespace bank --dry-run=client -o yaml | kubectl apply -f -
+  write_basic_auth bank accounts-auth accounts-admin "$accounts"
+  write_basic_auth bank ledger-auth admin "$ledger"
+  dir=$(mktemp -d)
+  printf '%s' "$accounts" >"$dir/password"
+  printf '%s' "accounts-admin" >"$dir/username"
+  printf '%s' "accounts-db" >"$dir/dbname"
+  printf '%s' "postgresql://accounts-admin:${accounts}@bank-rw.bank.svc.cluster.local:5432/accounts-db" >"$dir/uri"
+  if ! kubectl -n bank create secret generic accounts-app \
+    --from-file=username="$dir/username" \
+    --from-file=password="$dir/password" \
+    --from-file=dbname="$dir/dbname" \
+    --from-file=uri="$dir/uri" \
+    --dry-run=client -o yaml | kubectl apply -f -; then
+    rm -rf "$dir"
+    return 1
+  fi
+  rm -rf "$dir"
+  kubectl -n bank create secret generic jwt-key \
+    --from-file=jwtRS256.key=.local/jwt.key \
+    --from-file=jwtRS256.key.pub=.local/jwt.pub \
+    --dry-run=client -o yaml | kubectl apply -f -
+  push_head
+  flux reconcile kustomization flux-system --with-source --timeout=5m
+  flux reconcile kustomization apps-bank --with-source --timeout=20m
+  say "Waiting for the bank databases"
+  kubectl -n bank wait cluster/bank --for=condition=Ready --timeout=180s
+  kubectl -n bank wait job/bank-schema --for=condition=complete --timeout=180s
 }
 
 gateway_service() {
@@ -351,17 +420,30 @@ gateway() {
   done
   [[ -n "$svc" ]]
   start_forward gateway "$ns" "$svc" 8443 443
-  say "Waiting for the podinfo certificate"
-  kubectl -n apps wait --for=condition=Ready certificate/podinfo --timeout=180s
+  say "Waiting for the certificates"
+  kubectl -n apps wait --for=condition=Ready certificate/podinfo certificate/bank --timeout=180s
   say "Checking https://podinfo.localhost:8443"
+  local ok=0
   for i in $(seq 1 30); do
     if curl --fail --silent --show-error --cacert .local/ca.crt https://podinfo.localhost:8443 >/dev/null; then
       curl --fail --cacert .local/ca.crt https://podinfo.localhost:8443
+      ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$ok" -ne 1 ]]; then
+    echo "podinfo did not answer on https://podinfo.localhost:8443" >&2
+    return 1
+  fi
+  say "Checking https://bank.localhost:8443"
+  for i in $(seq 1 30); do
+    if curl --fail --silent --show-error --cacert .local/ca.crt https://bank.localhost:8443 >/dev/null; then
       return 0
     fi
     sleep 2
   done
-  echo "podinfo did not answer on https://podinfo.localhost:8443" >&2
+  echo "the bank did not answer on https://bank.localhost:8443" >&2
   return 1
 }
 
@@ -371,11 +453,12 @@ case "${1:-}" in
   flux) flux_bootstrap ;;
   platform) platform ;;
   apps) apps ;;
+  bank) bank ;;
   gateway) gateway ;;
   publish) publish ;;
   stop-forwards) stop_forwards ;;
   *)
-    echo "usage: $0 cluster|git-server|flux|platform|apps|gateway|publish|stop-forwards" >&2
+    echo "usage: $0 cluster|git-server|flux|platform|apps|bank|gateway|publish|stop-forwards" >&2
     exit 1
     ;;
 esac

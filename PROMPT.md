@@ -78,6 +78,7 @@ Done when `flux get kustomizations` shows those Kustomizations Ready, and a seco
 | --- | --- | --- |
 | cert-manager | `cert-manager` | a CA ClusterIssuer named `playground` |
 | Envoy Gateway | `envoy-gateway-system` | the GatewayClass the chart installs |
+| CloudNativePG | `cnpg-system` | the Cluster custom resource |
 
 The CA signs certificates for this Cluster. The Learner's Mac is the only client that needs to trust it.
 
@@ -91,7 +92,7 @@ All three live in namespace `apps`.
 | --- | --- | --- | --- |
 | podinfo | one Deployment, one Service | none | the Cache, over the Redis protocol Valkey speaks |
 | Valkey | one Deployment, one Service | no volume | podinfo's cache address |
-| Postgres | one Deployment, one Service, one PVC | database `playground`, user `playground` | workshops, through the Service |
+| Postgres | one CloudNativePG Cluster, one instance, Service `postgres` | database `playground`, user `playground` | workshops, through the Service |
 
 A restart may empty the Cache. The Database keeps its disk. Pin the image versions you verified. Read the pinned podinfo version for the cache address flag, and point that flag at the Valkey Service.
 
@@ -99,8 +100,10 @@ Write the Postgres password to `.local/postgres-password` with `umask 077`. Git 
 
 ```bash
 umask 077
-openssl rand -base64 24 > .local/postgres-password
+openssl rand -base64 24 | tr -d '\n' > .local/postgres-password
 kubectl -n apps create secret generic postgres-auth \
+  --type=kubernetes.io/basic-auth \
+  --from-literal=username=playground \
   --from-file=password=.local/postgres-password \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
@@ -132,6 +135,7 @@ Done when the curl in **Done** exits 0 and prints podinfo's runtime JSON.
 ```bash
 flux reconcile source git flux-system
 flux reconcile kustomization apps --with-source
+flux reconcile kustomization apps-bank --with-source
 flux reconcile kustomization infrastructure --with-source
 ```
 
@@ -146,9 +150,11 @@ PROMPT.md
 bootstrap/git-server/
 infrastructure/cert-manager/
 infrastructure/envoy-gateway/
+infrastructure/cnpg/
 apps/podinfo/
 apps/postgres/
 apps/valkey/
+apps/bank/
 clusters/playground/
 .local/
 ```
@@ -160,7 +166,7 @@ The target names are the Learner's interface. Split the recipes if you need to. 
 ```make
 .PHONY: up down status sync logs
 
-up: require cluster git-server flux platform apps gateway
+up: require cluster git-server flux platform apps bank gateway
 
 down:
 	container k8s delete --name playground
@@ -180,11 +186,11 @@ logs:
 	flux logs --since=10m
 	kubectl logs -l app.kubernetes.io/name=envoy --all-containers --tail=50 -A
 	kubectl logs -l app.kubernetes.io/name=podinfo --tail=50 -n apps
-	kubectl logs -l app.kubernetes.io/name=postgres --tail=50 -n apps
+	kubectl logs -l cnpg.io/cluster=postgres,cnpg.io/podRole=instance --tail=50 -n apps
 	kubectl logs -l app.kubernetes.io/name=valkey --tail=50 -n apps
 ```
 
-`make status` exits 0 only when the Cluster is listed, the Kustomizations are Ready, the podinfo certificate is Ready, and the curl exits 0. Set `app.kubernetes.io/name` on the Gateway, podinfo, Postgres, and Valkey pods so `make logs` selects them.
+`make status` exits 0 only when the Cluster is listed, the Kustomizations are Ready, the podinfo certificate is Ready, and the curl exits 0. Set `app.kubernetes.io/name` on the Gateway, podinfo, and Valkey pods so `make logs` selects them. CloudNativePG labels its pods `cnpg.io/cluster=postgres`.
 
 ## Manifest rules
 

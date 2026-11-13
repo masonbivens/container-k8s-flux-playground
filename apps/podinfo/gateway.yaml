@@ -15,6 +15,16 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
+    - name: bank-http
+      hostname: bank.localhost
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              app.kubernetes.io/part-of: playground
     - name: https
       hostname: podinfo.localhost
       port: 443
@@ -27,3 +37,18 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
+    - name: bank-https
+      hostname: bank.localhost
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: bank-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              app.kubernetes.io/part-of: playground

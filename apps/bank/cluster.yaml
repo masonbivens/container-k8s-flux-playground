@@ -1,0 +1,69 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: bank
+  labels:
+    app.kubernetes.io/name: bank-db
+spec:
+  # This Cluster has one node. A second instance stays Pending under required anti-affinity.
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:1546be7d23066aaf9eb75b07df17c843c98483cede7afdbaf01dca785fb3bf60
+  imagePullPolicy: IfNotPresent
+  enableSuperuserAccess: false
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: restart
+  smartShutdownTimeout: 180
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  bootstrap:
+    initdb:
+      database: accounts-db
+      owner: accounts-admin
+      dataChecksums: true
+      encoding: UTF8
+      localeCollate: C
+      localeCType: C
+      secret:
+        name: accounts-auth
+  storage:
+    size: 1Gi
+    storageClass: local-path
+    resizeInUseVolumes: true
+  walStorage:
+    size: 1Gi
+    storageClass: local-path
+    resizeInUseVolumes: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  ephemeralVolumesSizeLimit:
+    shm: 512Mi
+    temporaryData: 256Mi
+  postgresql:
+    parameters:
+      shared_buffers: "256MB"
+      effective_cache_size: "512MB"
+      work_mem: "4MB"
+      maintenance_work_mem: "64MB"
+      max_connections: "80"
+      password_encryption: "scram-sha-256"
+      huge_pages: "off"
+      wal_compression: "zstd"
+      max_wal_size: "1GB"
+      min_wal_size: "256MB"
+      checkpoint_timeout: "15min"
+      log_min_duration_statement: "1000"
+      log_checkpoints: "on"
+      log_lock_waits: "on"
+      log_temp_files: "0"
+      log_autovacuum_min_duration: "1s"
+      idle_in_transaction_session_timeout: "60000"
+  inheritedMetadata:
+    labels:
+      app.kubernetes.io/name: bank-db

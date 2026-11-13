@@ -1,9 +1,9 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-.PHONY: up down status sync logs require cluster git-server flux platform apps gateway
+.PHONY: up down status sync logs require cluster git-server flux platform apps bank gateway
 
-up: require cluster git-server flux platform apps gateway
+up: require cluster git-server flux platform apps bank gateway
 
 require:
 	for tool in container kubectl flux git; do \
@@ -33,7 +33,10 @@ platform: flux
 apps: platform
 	bash scripts/playground.sh apps
 
-gateway: apps
+bank: apps
+	bash scripts/playground.sh bank
+
+gateway: bank
 	bash scripts/playground.sh gateway
 
 down:
@@ -54,6 +57,7 @@ sync:
 	kubectl config use-context playground
 	flux reconcile source git flux-system
 	flux reconcile kustomization apps --with-source
+	flux reconcile kustomization apps-bank --with-source
 	flux reconcile kustomization infrastructure --with-source
 
 logs:
@@ -61,5 +65,5 @@ logs:
 	flux logs --since=10m
 	kubectl logs -l app.kubernetes.io/name=envoy --all-containers --tail=50 -n envoy-gateway-system
 	kubectl logs -l app.kubernetes.io/name=podinfo --tail=50 -n apps
-	kubectl logs -l app.kubernetes.io/name=postgres --tail=50 -n apps
+	kubectl logs -l cnpg.io/cluster=postgres,cnpg.io/podRole=instance --tail=50 -n apps
 	kubectl logs -l app.kubernetes.io/name=valkey --tail=50 -n apps

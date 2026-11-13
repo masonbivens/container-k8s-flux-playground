@@ -61,6 +61,7 @@ spec:
               value: "1000"
             - name: ENABLE_METRICS
               value: "false"
+            # This node's cgroup layout crashes Spring's processor metrics bean.
             - name: SPRING_AUTOCONFIGURE_EXCLUDE
               value: org.springframework.boot.actuate.autoconfigure.metrics.SystemMetricsAutoConfiguration
             - name: POSTGRES_DB

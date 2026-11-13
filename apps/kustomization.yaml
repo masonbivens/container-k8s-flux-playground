@@ -1,8 +1,15 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: apps
 resources:
-  - namespace.yaml
-  - podinfo
-  - valkey
-  - postgres
+  - app-sandbox/ks.yaml
+  - app-sandbox/postgres/ks.yaml
+  - app-sandbox/valkey/ks.yaml
+  - app-sandbox/sandbox-podinfo/ks.yaml
+  - app-bank/ks.yaml
+  - app-bank/bank-postgres/ks.yaml
+  - app-bank/bank-frontend/ks.yaml
+  - app-bank/bank-userservice/ks.yaml
+  - app-bank/bank-contacts/ks.yaml
+  - app-bank/bank-balancereader/ks.yaml
+  - app-bank/bank-ledgerwriter/ks.yaml
+  - app-bank/bank-transactionhistory/ks.yaml

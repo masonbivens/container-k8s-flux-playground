@@ -18,6 +18,9 @@ section() {
     Git) section_color=33 ;;
     Flux) section_color=34 ;;
     Platform) section_color=35 ;;
+    Secrets) section_color=93 ;;
+    Encrypt) section_color=93 ;;
+    Decrypt) section_color=94 ;;
     Apps) section_color=32 ;;
     Bank) section_color=92 ;;
     Gateway) section_color=96 ;;
@@ -36,24 +39,289 @@ context() {
   kubectl config use-context playground >/dev/null
 }
 
-write_basic_auth() {
-  local ns=$1 name=$2 user=$3 pass=$4 dir current
-  current=$(kubectl -n "$ns" get secret "$name" -o jsonpath='{.type}' 2>/dev/null || true)
-  if [[ -n "$current" && "$current" != "kubernetes.io/basic-auth" ]]; then
-    kubectl -n "$ns" delete secret "$name"
+write_sops_config() {
+  local pub
+  pub=$(awk '/public key:/{print $NF; exit}' "$root/.local/age.key")
+  cat >"$root/.sops.yaml" <<EOF
+creation_rules:
+  - path_regex: (^|/)secrets/.+
+    encrypted_regex: ^(data|stringData)$
+    age: ${pub}
+EOF
+}
+
+require_age_key() {
+  local tool
+  for tool in sops age; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "brew install $tool" >&2
+      exit 1
+    fi
+  done
+  if [[ ! -s $root/.local/age.key ]]; then
+    echo ".local/age.key is missing. Run make secrets." >&2
+    exit 1
   fi
-  dir=$(mktemp -d)
-  printf '%s' "$user" >"$dir/username"
-  printf '%s' "$pass" >"$dir/password"
-  if ! kubectl -n "$ns" create secret generic "$name" \
-    --type=kubernetes.io/basic-auth \
-    --from-file=username="$dir/username" \
-    --from-file=password="$dir/password" \
-    --dry-run=client -o yaml | kubectl apply -f -; then
-    rm -rf "$dir"
-    return 1
+}
+
+show_secret() {
+  local rel=${1#"$root/"}
+  if [[ $secret_action == skipped ]]; then
+    if [[ $2 == encrypt ]]; then
+      say "$rel is already encrypted"
+    else
+      say "$rel is already plain text"
+    fi
+    return 0
   fi
-  rm -rf "$dir"
+  say "$rel"
+}
+
+ensure_age() {
+  umask 077
+  mkdir -p .local
+  if [[ ! -s .local/age.key ]]; then
+    age-keygen -o .local/age.key >/dev/null 2>&1
+  fi
+  chmod 600 .local/age.key
+  write_sops_config
+}
+
+each_secret_file() {
+  local dir file
+  while IFS= read -r -d '' dir; do
+    while IFS= read -r -d '' file; do
+      case "$(basename "$file")" in
+        kustomization.yaml|kustomization.yml) continue ;;
+      esac
+      printf '%s\0' "$file"
+    done < <(find "$dir" -type f -print0)
+  done < <(find "$root/apps" -type d -name secrets -print0)
+}
+
+check_secret_file() {
+  local file=$1 rel base
+  if [[ $file != /* ]]; then
+    file=$root/$file
+  fi
+  if [[ ! -f $file ]]; then
+    echo "no file $file" >&2
+    exit 1
+  fi
+  rel=${file#"$root/"}
+  base=$(basename "$file")
+  case $rel in
+    */secrets/*) ;;
+    *)
+      echo "$rel is outside a secrets directory" >&2
+      exit 1
+      ;;
+  esac
+  case $base in
+    kustomization.yaml|kustomization.yml)
+      echo "$base stays plain text" >&2
+      exit 1
+      ;;
+  esac
+  printf '%s' "$file"
+}
+
+encrypt_one() {
+  local file=$1 rel
+  secret_action=skipped
+  if grep -q '^sops:' "$file"; then
+    return 0
+  fi
+  rel=${file#"$root/"}
+  SOPS_AGE_KEY_FILE="$root/.local/age.key" \
+    sops --encrypt --filename-override "$rel" --in-place "$file"
+  secret_action=encrypted
+}
+
+decrypt_one() {
+  local file=$1
+  secret_action=skipped
+  if ! grep -q '^sops:' "$file"; then
+    return 0
+  fi
+  SOPS_AGE_KEY_FILE="$root/.local/age.key" \
+    sops --decrypt --in-place "$file"
+  secret_action=decrypted
+}
+
+encrypt_secrets() {
+  local target=${1:-} file count=0
+  section Encrypt
+  require_age_key
+  write_sops_config
+  if [[ -n $target ]]; then
+    target=$(check_secret_file "$target") || exit 1
+    encrypt_one "$target"
+    show_secret "$target" encrypt
+    return 0
+  fi
+  while IFS= read -r -d '' file; do
+    count=$((count + 1))
+    encrypt_one "$file"
+    show_secret "$file" encrypt
+  done < <(each_secret_file)
+  if [[ $count -eq 0 ]]; then
+    say "no secret files"
+  fi
+}
+
+decrypt_secrets() {
+  local target=${1:-} file count=0
+  section Decrypt
+  require_age_key
+  if [[ -n $target ]]; then
+    target=$(check_secret_file "$target") || exit 1
+    decrypt_one "$target"
+    show_secret "$target" decrypt
+    return 0
+  fi
+  while IFS= read -r -d '' file; do
+    count=$((count + 1))
+    decrypt_one "$file"
+    show_secret "$file" decrypt
+  done < <(each_secret_file)
+  if [[ $count -eq 0 ]]; then
+    say "no secret files"
+  fi
+}
+
+prepare_secrets() {
+  umask 077
+  mkdir -p .local
+  if [[ ! -s .local/postgres-password ]]; then
+    openssl rand -base64 24 | tr -d '\n' >.local/postgres-password
+  fi
+  if [[ ! -s .local/accounts-password ]]; then
+    openssl rand -hex 24 | tr -d '\n' >.local/accounts-password
+  fi
+  if [[ ! -s .local/ledger-password ]]; then
+    openssl rand -hex 24 | tr -d '\n' >.local/ledger-password
+  fi
+  if [[ ! -s .local/jwt.key || ! -s .local/jwt.pub ]]; then
+    openssl genrsa -out .local/jwt.key 2048
+    openssl rsa -in .local/jwt.key -pubout -out .local/jwt.pub
+  fi
+  chmod 600 .local/postgres-password .local/accounts-password .local/ledger-password .local/jwt.key .local/jwt.pub
+  ensure_age
+  python3 - <<'PY'
+from pathlib import Path
+root = Path(".").resolve()
+
+def write_secret(path, name, secret_type, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.read_text().startswith("sops:") or (path.exists() and "\nsops:\n" in "\n" + path.read_text()):
+        return
+    lines = ["apiVersion: v1", "kind: Secret", "metadata:", f"  name: {name}"]
+    if secret_type:
+        lines.append(f"type: {secret_type}")
+    lines.append("stringData:")
+    for key, value in data.items():
+        if "\n" in value:
+            lines.append(f"  {key}: |")
+            lines.extend(f"    {line}" for line in value.splitlines())
+        else:
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'  {key}: "{escaped}"')
+    path.write_text("\n".join(lines) + "\n")
+
+def text(path):
+    return Path(path).read_text().strip()
+
+postgres = text(".local/postgres-password")
+accounts = text(".local/accounts-password")
+ledger = text(".local/ledger-password")
+write_secret(
+    root / "apps/app-sandbox/postgres/secrets/secrets-postgres-auth.yaml",
+    "postgres-auth",
+    "kubernetes.io/basic-auth",
+    {"username": "playground", "password": postgres},
+)
+write_secret(
+    root / "apps/app-bank/secrets/secrets-accounts-auth.yaml",
+    "accounts-auth",
+    "kubernetes.io/basic-auth",
+    {"username": "accounts-admin", "password": accounts},
+)
+write_secret(
+    root / "apps/app-bank/secrets/secrets-ledger-auth.yaml",
+    "ledger-auth",
+    "kubernetes.io/basic-auth",
+    {"username": "admin", "password": ledger},
+)
+write_secret(
+    root / "apps/app-bank/secrets/secrets-accounts-app.yaml",
+    "accounts-app",
+    "",
+    {
+        "username": "accounts-admin",
+        "password": accounts,
+        "dbname": "accounts-db",
+        "uri": f"postgresql://accounts-admin:{accounts}@bank-rw.app-bank.svc.cluster.local:5432/accounts-db",
+    },
+)
+write_secret(
+    root / "apps/app-bank/secrets/secrets-jwt-key.yaml",
+    "jwt-key",
+    "",
+    {
+        "jwtRS256.key": Path(".local/jwt.key").read_text(),
+        "jwtRS256.key.pub": Path(".local/jwt.pub").read_text(),
+    },
+)
+
+for secrets_dir in root.joinpath("apps").rglob("secrets"):
+    if not secrets_dir.is_dir():
+        continue
+    skip = {"kustomization.yaml", "kustomization.yml"}
+    files = sorted(
+        p.relative_to(secrets_dir).as_posix()
+        for p in secrets_dir.rglob("*")
+        if p.is_file() and p.name not in skip and p.suffix in {".yaml", ".yml", ".json"}
+    )
+    if not files:
+        continue
+    lines = [
+        "apiVersion: kustomize.config.k8s.io/v1beta1",
+        "kind: Kustomization",
+        "resources:",
+    ]
+    lines.extend(f"  - {name}" for name in files)
+    (secrets_dir / "kustomization.yaml").write_text("\n".join(lines) + "\n")
+    parent = secrets_dir.parent / "kustomization.yaml"
+    text_parent = parent.read_text()
+    if "\n  - secrets\n" not in text_parent and not text_parent.endswith("\n  - secrets\n"):
+        if "resources:" not in text_parent:
+            raise SystemExit(f"{parent} has no resources list")
+        parent.write_text(text_parent.replace("resources:\n", "resources:\n  - secrets\n", 1))
+PY
+  encrypt_secrets
+}
+
+commit_secrets() {
+  git add -- .sops.yaml
+  local file
+  while IFS= read -r -d '' file; do
+    git add -- "$file"
+  done < <(find apps -type f -path '*/secrets/*' -print0)
+  if git diff --cached --quiet; then
+    return 0
+  fi
+  git commit -m "$(cat <<'EOF'
+Encrypt Playground secrets for this Mac.
+
+EOF
+)"
+}
+
+install_sops_key() {
+  kubectl -n flux-system create secret generic sops-age \
+    --from-file=age.agekey=.local/age.key \
+    --dry-run=client -o yaml | kubectl apply -f -
 }
 
 install_shim() {
@@ -303,14 +571,67 @@ apps() {
   if [[ ! -s .local/postgres-password ]]; then
     openssl rand -base64 24 | tr -d '\n' >.local/postgres-password
   fi
-  kubectl create namespace apps --dry-run=client -o yaml | kubectl apply -f -
-  write_basic_auth apps postgres-auth playground "$(tr -d '\n' <.local/postgres-password)"
+  prepare_secrets
+  commit_secrets
+  install_sops_key
+  release_replaced
   push_head
-  flux reconcile kustomization apps --with-source --timeout=10m
+  flux reconcile kustomization flux-system --with-source --timeout=5m
+  reconcile_workloads
+  reconcile_sandbox
   say "Waiting for podinfo, the Cache, and the Database"
-  kubectl -n apps rollout status deployment/podinfo --timeout=180s
-  kubectl -n apps rollout status deployment/valkey --timeout=180s
-  kubectl -n apps wait cluster/postgres --for=condition=Ready --timeout=180s
+  kubectl -n app-sandbox rollout status deployment/podinfo --timeout=180s
+  kubectl -n app-sandbox rollout status deployment/valkey --timeout=180s
+  kubectl -n app-sandbox wait cluster/postgres --for=condition=Ready --timeout=180s
+}
+
+release_replaced() {
+  local name
+  for name in apps-bank apps app-sandbox postgres valkey sandbox-podinfo app-bank bank-postgres bank-frontend bank-userservice bank-contacts bank-balancereader bank-ledgerwriter bank-transactionhistory; do
+    if kubectl -n flux-system get kustomization "$name" >/dev/null 2>&1; then
+      kubectl -n flux-system patch kustomization "$name" --type merge \
+        -p '{"spec":{"deletionPolicy":"Orphan","prune":false}}'
+    fi
+  done
+}
+
+reconcile_workloads() {
+  flux reconcile kustomization workloads --with-source --timeout=2m
+}
+
+reconcile_sandbox() {
+  flux reconcile kustomization app-sandbox --with-source --timeout=5m
+  flux reconcile kustomization postgres --with-source --timeout=10m
+  flux reconcile kustomization valkey --with-source --timeout=5m
+  flux reconcile kustomization sandbox-podinfo --with-source --timeout=5m
+}
+
+reconcile_bank() {
+  local name
+  flux reconcile kustomization app-bank --with-source --timeout=5m
+  flux reconcile kustomization bank-postgres --with-source --timeout=20m
+  for name in frontend userservice contacts balancereader ledgerwriter transactionhistory; do
+    flux reconcile kustomization "bank-${name}" --with-source --timeout=5m
+  done
+}
+
+sync_all() {
+  context
+  local before
+  before=$(git rev-parse HEAD)
+  prepare_secrets
+  commit_secrets
+  install_sops_key
+  if [[ $(git rev-parse HEAD) != "$before" ]]; then
+    push_head
+  fi
+  release_replaced
+  flux reconcile source git flux-system
+  flux reconcile kustomization flux-system --with-source --timeout=5m
+  flux reconcile kustomization infrastructure --with-source --timeout=10m
+  reconcile_workloads
+  reconcile_sandbox
+  reconcile_bank
 }
 
 bank() {
@@ -319,48 +640,18 @@ bank() {
   context
   umask 077
   mkdir -p .local
-  local accounts ledger dir
-  if [[ ! -s .local/accounts-password ]]; then
-    openssl rand -hex 24 | tr -d '\n' >.local/accounts-password
-  fi
-  if [[ ! -s .local/ledger-password ]]; then
-    openssl rand -hex 24 | tr -d '\n' >.local/ledger-password
-  fi
-  if [[ ! -s .local/jwt.key || ! -s .local/jwt.pub ]]; then
-    openssl genrsa -out .local/jwt.key 2048
-    openssl rsa -in .local/jwt.key -pubout -out .local/jwt.pub
-  fi
-  chmod 600 .local/accounts-password .local/ledger-password .local/jwt.key .local/jwt.pub
-  accounts=$(tr -d '\n' <.local/accounts-password)
-  ledger=$(tr -d '\n' <.local/ledger-password)
-  kubectl create namespace bank --dry-run=client -o yaml | kubectl apply -f -
-  write_basic_auth bank accounts-auth accounts-admin "$accounts"
-  write_basic_auth bank ledger-auth admin "$ledger"
-  dir=$(mktemp -d)
-  printf '%s' "$accounts" >"$dir/password"
-  printf '%s' "accounts-admin" >"$dir/username"
-  printf '%s' "accounts-db" >"$dir/dbname"
-  printf '%s' "postgresql://accounts-admin:${accounts}@bank-rw.bank.svc.cluster.local:5432/accounts-db" >"$dir/uri"
-  if ! kubectl -n bank create secret generic accounts-app \
-    --from-file=username="$dir/username" \
-    --from-file=password="$dir/password" \
-    --from-file=dbname="$dir/dbname" \
-    --from-file=uri="$dir/uri" \
-    --dry-run=client -o yaml | kubectl apply -f -; then
-    rm -rf "$dir"
-    return 1
-  fi
-  rm -rf "$dir"
-  kubectl -n bank create secret generic jwt-key \
-    --from-file=jwtRS256.key=.local/jwt.key \
-    --from-file=jwtRS256.key.pub=.local/jwt.pub \
-    --dry-run=client -o yaml | kubectl apply -f -
+  prepare_secrets
+  commit_secrets
+  install_sops_key
+  kubectl create namespace app-bank --dry-run=client -o yaml | kubectl apply -f -
+  release_replaced
   push_head
   flux reconcile kustomization flux-system --with-source --timeout=5m
-  flux reconcile kustomization apps-bank --with-source --timeout=20m
+  reconcile_workloads
+  reconcile_bank
   say "Waiting for the bank databases"
-  kubectl -n bank wait cluster/bank --for=condition=Ready --timeout=180s
-  kubectl -n bank wait job/bank-schema --for=condition=complete --timeout=180s
+  kubectl -n app-bank wait cluster/bank --for=condition=Ready --timeout=180s
+  kubectl -n app-bank wait job/bank-schema --for=condition=complete --timeout=180s
 }
 
 gateway_service() {
@@ -421,7 +712,7 @@ gateway() {
   [[ -n "$svc" ]]
   start_forward gateway "$ns" "$svc" 8443 443
   say "Waiting for the certificates"
-  kubectl -n apps wait --for=condition=Ready certificate/podinfo certificate/bank --timeout=180s
+  kubectl -n app-sandbox wait --for=condition=Ready certificate/podinfo certificate/bank --timeout=180s
   say "Checking https://podinfo.localhost:8443"
   local ok=0
   for i in $(seq 1 30); do
@@ -447,6 +738,12 @@ gateway() {
   return 1
 }
 
+secrets() {
+  section Secrets
+  say "Creating the age key and .sops.yaml"
+  prepare_secrets
+}
+
 case "${1:-}" in
   cluster) cluster ;;
   git-server) git_server ;;
@@ -457,8 +754,12 @@ case "${1:-}" in
   gateway) gateway ;;
   publish) publish ;;
   stop-forwards) stop_forwards ;;
+  secrets) secrets ;;
+  encrypt) encrypt_secrets "${2:-}" ;;
+  decrypt) decrypt_secrets "${2:-}" ;;
+  sync) sync_all ;;
   *)
-    echo "usage: $0 cluster|git-server|flux|platform|apps|bank|gateway|publish|stop-forwards" >&2
+    echo "usage: $0 cluster|git-server|flux|platform|apps|bank|gateway|publish|stop-forwards|sync|secrets|encrypt|decrypt" >&2
     exit 1
     ;;
 esac

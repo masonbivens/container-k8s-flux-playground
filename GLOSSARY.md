@@ -1,3 +1,14 @@
+---
+type: "Glossary"
+title: "Glossary"
+description: "Names for the Learner, the Cluster, and the Playground."
+tags: [playground, glossary]
+status: stable
+generated: { by: human:mason.bivens, at: 2026-11-12T00:00:00Z }
+verified: { by: human:mason.bivens, at: 2026-11-12T00:00:00Z }
+stale_after: 2027-05-11T00:00:00Z
+---
+
 # Playground
 
 A sample Kubernetes and GitOps environment for a local workshop.
@@ -16,6 +27,10 @@ _Avoid_: kind cluster, k3d, minikube, Docker Desktop
 The sample Cluster, the Git server, and the workloads Flux reconciles, used in a local workshop.
 _Avoid_: tutorial, course, demo app
 
+**Workload**:
+A program the workshop runs in the Playground, such as podinfo, the Cache, or the Database.
+_Avoid_: service, app
+
 **Day 1**:
 Creating a Playground.
 _Avoid_: install, bootstrap, provision
@@ -29,11 +44,11 @@ The Git remote inside the Cluster. The Learner pushes to it, and Flux pulls from
 _Avoid_: GitHub, origin
 
 **Gateway**:
-The encrypted entrance to podinfo. A certificate from the Playground CA protects it.
+The encrypted entrance to podinfo and the bank. A certificate from the Playground CA protects each hostname.
 _Avoid_: ingress
 
 **CA**:
-The authority inside the Cluster that signs the podinfo certificate. The Learner's Mac trusts it.
+The authority inside the Cluster that signs certificates for Playground hostnames. The Learner's Mac trusts it.
 _Avoid_: Let's Encrypt, public CA
 
 **Cache**:

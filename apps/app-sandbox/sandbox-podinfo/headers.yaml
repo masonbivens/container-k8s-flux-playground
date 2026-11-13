@@ -1,0 +1,40 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: playground
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: playground
+  headers:
+    enableEnvoyHeaders: false
+    requestID: Generate
+    earlyRequestHeaders:
+      remove:
+        - forwarded
+        - x-forwarded-for
+        - x-forwarded-host
+        - x-forwarded-proto
+        - x-real-ip
+        - x-envoy-external-address
+    lateResponseHeaders:
+      set:
+        - name: Strict-Transport-Security
+          value: "max-age=31536000; includeSubDomains"
+        - name: X-Content-Type-Options
+          value: nosniff
+        - name: X-Frame-Options
+          value: DENY
+        - name: Referrer-Policy
+          value: strict-origin-when-cross-origin
+        - name: Permissions-Policy
+          value: "camera=(), microphone=(), geolocation=()"
+        - name: Cross-Origin-Opener-Policy
+          value: same-origin
+        - name: X-Request-Id
+          value: "%REQ(X-REQUEST-ID)%"
+      remove:
+        - server
+        - x-powered-by
+        - x-envoy-upstream-service-time

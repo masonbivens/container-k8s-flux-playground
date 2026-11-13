@@ -1,3 +1,14 @@
+---
+type: "Reference"
+title: "Playground build"
+description: "The build brief for one Playground on the Learner's Mac."
+tags: [playground, build]
+status: stable
+generated: { by: human:mason.bivens, at: 2026-11-12T00:00:00Z }
+verified: { by: human:mason.bivens, at: 2026-11-12T00:00:00Z }
+stale_after: 2027-05-11T00:00:00Z
+---
+
 # Playground build
 
 Read [GLOSSARY.md](GLOSSARY.md) and use those words for those things.
@@ -86,7 +97,7 @@ Done when both HelmReleases are Ready and the ClusterIssuer exists.
 
 ### 6. Install the workloads with Kustomize
 
-All three live in namespace `apps`.
+All three live in namespace `app-sandbox`.
 
 | Workload | Shape | Data | Who connects |
 | --- | --- | --- | --- |
@@ -96,17 +107,7 @@ All three live in namespace `apps`.
 
 A restart may empty the Cache. The Database keeps its disk. Pin the image versions you verified. Read the pinned podinfo version for the cache address flag, and point that flag at the Valkey Service.
 
-Write the Postgres password to `.local/postgres-password` with `umask 077`. Git tracks the Secret name and ignores `.local/`.
-
-```bash
-umask 077
-openssl rand -base64 24 | tr -d '\n' > .local/postgres-password
-kubectl -n apps create secret generic postgres-auth \
-  --type=kubernetes.io/basic-auth \
-  --from-literal=username=playground \
-  --from-file=password=.local/postgres-password \
-  --dry-run=client -o yaml | kubectl apply -f -
-```
+Write the Postgres password to `.local/postgres-password` with `umask 077`. SOPS encrypts every file under a `secrets` directory except `kustomization.yaml`, and it encrypts `data` and `stringData` values. The age private key stays in `.local/age.key`. Git ignores `.local/`. Flux decrypts with Secret `sops-age` in `flux-system`.
 
 ```gitignore
 .local/
@@ -134,9 +135,17 @@ Done when the curl in **Done** exits 0 and prints podinfo's runtime JSON.
 
 ```bash
 flux reconcile source git flux-system
-flux reconcile kustomization apps --with-source
-flux reconcile kustomization apps-bank --with-source
+flux reconcile kustomization flux-system --with-source
 flux reconcile kustomization infrastructure --with-source
+flux reconcile kustomization apps --with-source
+flux reconcile kustomization app-bank --with-source
+flux reconcile kustomization bank-postgres --with-source
+flux reconcile kustomization bank-frontend --with-source
+flux reconcile kustomization bank-userservice --with-source
+flux reconcile kustomization bank-contacts --with-source
+flux reconcile kustomization bank-balancereader --with-source
+flux reconcile kustomization bank-ledgerwriter --with-source
+flux reconcile kustomization bank-transactionhistory --with-source
 ```
 
 Done when the three Day 2 bullets in **Done** pass on a Cluster that `make up` has already created.
@@ -154,7 +163,7 @@ infrastructure/cnpg/
 apps/podinfo/
 apps/postgres/
 apps/valkey/
-apps/bank/
+apps/app-bank/
 clusters/playground/
 .local/
 ```
@@ -166,7 +175,7 @@ The target names are the Learner's interface. Split the recipes if you need to. 
 ```make
 .PHONY: up down status sync logs
 
-up: require cluster git-server flux platform apps bank gateway
+up: require cluster git-server flux platform secrets apps bank gateway
 
 down:
 	container k8s delete --name playground
@@ -174,7 +183,7 @@ down:
 status:
 	container k8s list
 	flux get kustomizations
-	kubectl wait -n apps --for=condition=Ready certificate --all --timeout=30s
+	kubectl wait -n app-sandbox --for=condition=Ready certificate --all --timeout=30s
 	curl --fail --cacert .local/ca.crt https://podinfo.localhost:8443
 
 sync:
@@ -185,9 +194,9 @@ sync:
 logs:
 	flux logs --since=10m
 	kubectl logs -l app.kubernetes.io/name=envoy --all-containers --tail=50 -A
-	kubectl logs -l app.kubernetes.io/name=podinfo --tail=50 -n apps
-	kubectl logs -l cnpg.io/cluster=postgres,cnpg.io/podRole=instance --tail=50 -n apps
-	kubectl logs -l app.kubernetes.io/name=valkey --tail=50 -n apps
+	kubectl logs -l app.kubernetes.io/name=podinfo --tail=50 -n app-sandbox
+	kubectl logs -l cnpg.io/cluster=postgres,cnpg.io/podRole=instance --tail=50 -n app-sandbox
+	kubectl logs -l app.kubernetes.io/name=valkey --tail=50 -n app-sandbox
 ```
 
 `make status` exits 0 only when the Cluster is listed, the Kustomizations are Ready, the podinfo certificate is Ready, and the curl exits 0. Set `app.kubernetes.io/name` on the Gateway, podinfo, and Valkey pods so `make logs` selects them. CloudNativePG labels its pods `cnpg.io/cluster=postgres`.

@@ -1,18 +1,28 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-.PHONY: up down status sync logs require cluster git-server flux platform apps bank gateway
+.PHONY: up down status sync logs require cluster git-server flux platform secrets apps bank gateway encrypt decrypt
 
-up: require cluster git-server flux platform apps bank gateway
+FILE ?=
+
+encrypt:
+	@bash scripts/playground.sh encrypt $(if $(FILE),"$(FILE)")
+
+decrypt:
+	@bash scripts/playground.sh decrypt $(if $(FILE),"$(FILE)")
+
+up: require cluster git-server flux platform secrets apps bank gateway
 
 require:
-	for tool in container kubectl flux git; do \
+	for tool in container kubectl flux git sops age; do \
 		if ! command -v $$tool >/dev/null 2>&1; then \
 			case $$tool in \
 				container) echo "brew install container" ;; \
 				kubectl) echo "brew install kubectl" ;; \
 				flux) echo "brew install fluxcd/tap/flux" ;; \
 				git) echo "brew install git" ;; \
+				sops) echo "brew install sops" ;; \
+				age) echo "brew install age" ;; \
 			esac; \
 			exit 1; \
 		fi; \
@@ -30,7 +40,10 @@ flux: git-server
 platform: flux
 	bash scripts/playground.sh platform
 
-apps: platform
+secrets: platform
+	bash scripts/playground.sh secrets
+
+apps: secrets
 	bash scripts/playground.sh apps
 
 bank: apps
@@ -50,20 +63,16 @@ status:
 	container k8s list | awk 'NR>1 && $$1=="playground" { found=1 } END { exit !found }'
 	flux get kustomizations
 	kubectl -n flux-system wait kustomization --all --for=condition=Ready --timeout=30s
-	kubectl wait -n apps --for=condition=Ready certificate --all --timeout=30s
+	kubectl wait -n app-sandbox --for=condition=Ready certificate --all --timeout=30s
 	curl --fail --cacert .local/ca.crt https://podinfo.localhost:8443
 
 sync:
-	kubectl config use-context playground
-	flux reconcile source git flux-system
-	flux reconcile kustomization apps --with-source
-	flux reconcile kustomization apps-bank --with-source
-	flux reconcile kustomization infrastructure --with-source
+	bash scripts/playground.sh sync
 
 logs:
 	kubectl config use-context playground
 	flux logs --since=10m
 	kubectl logs -l app.kubernetes.io/name=envoy --all-containers --tail=50 -n envoy-gateway-system
-	kubectl logs -l app.kubernetes.io/name=podinfo --tail=50 -n apps
-	kubectl logs -l cnpg.io/cluster=postgres,cnpg.io/podRole=instance --tail=50 -n apps
-	kubectl logs -l app.kubernetes.io/name=valkey --tail=50 -n apps
+	kubectl logs -l app.kubernetes.io/name=podinfo --tail=50 -n app-sandbox
+	kubectl logs -l cnpg.io/cluster=postgres,cnpg.io/podRole=instance --tail=50 -n app-sandbox
+	kubectl logs -l app.kubernetes.io/name=valkey --tail=50 -n app-sandbox

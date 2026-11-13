@@ -60,7 +60,7 @@ spec:
             - name: CACHE_SIZE
               value: "1000"
             - name: ENABLE_METRICS
-              value: "true"
+              value: "false"
             - name: POSTGRES_DB
               value: postgresdb
             - name: POSTGRES_USER
